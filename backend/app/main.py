@@ -1,3 +1,4 @@
+# pyre-ignore-all-errors
 """
 FastAPI application — PDF Redactor for multi-show sponsorship contracts.
 
@@ -10,8 +11,11 @@ Endpoints:
 
 import os
 import uuid
+import time
+import asyncio
 import logging
 from io import BytesIO
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,7 +46,41 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="PDF Redactor", version="0.1.0")
+# ---------------------------------------------------------------------------
+# In-memory document store  (MVP — no database)
+# ---------------------------------------------------------------------------
+
+# { document_id: { "pdf_bytes": bytes, "blocks": [TextBlock], "classification": ClassifyResponse | None, "created_at": float } }
+documents: dict[str, dict] = {}
+
+DOCUMENT_TTL_SECONDS = 60 * 60  # 1 hour
+
+async def cleanup_old_documents():
+    """Background task to remove documents older than 1 hour from memory."""
+    while True:
+        try:
+            await asyncio.sleep(60 * 10)  # Check every 10 minutes
+            now = time.time()
+            expired_ids = [
+                doc_id for doc_id, doc in documents.items()
+                if now - doc.get("created_at", now) > DOCUMENT_TTL_SECONDS
+            ]
+            for doc_id in expired_ids:
+                del documents[doc_id]
+            if expired_ids:
+                logger.info("Cleaned up %d expired documents from memory", len(expired_ids))
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.error("Error in cleanup task: %s", exc)
+
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI):
+    task = asyncio.create_task(cleanup_old_documents())
+    yield
+    task.cancel()
+
+app = FastAPI(title="PDF Redactor", version="0.1.0", lifespan=lifespan)
 
 # Allow frontend origins (local dev + production)
 app.add_middleware(
@@ -58,13 +96,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ---------------------------------------------------------------------------
-# In-memory document store  (MVP — no database)
-# ---------------------------------------------------------------------------
-
-# { document_id: { "pdf_bytes": bytes, "blocks": [TextBlock], "classification": ClassifyResponse | None } }
-documents: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -117,6 +148,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         "pdf_bytes": pdf_bytes,
         "blocks": blocks,
         "classification": None,
+        "created_at": time.time(),
     }
 
     logger.info(

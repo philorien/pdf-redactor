@@ -1,0 +1,10 @@
+{
+  "source_directories": ["backend"],
+  "search_path": [
+    "/Users/plinley/Developer/pdf-redactor/backend/venv/lib/python3.9/site-packages"
+  ],
+  "site_package_search_strategy": "all",
+  "ignore_all_errors": [
+    "backend/venv"
+  ]
+}
